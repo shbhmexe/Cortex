@@ -29,7 +29,9 @@ function Citation({ url, index }: { url: string; index: number }) {
 
 export function MessageBubble({ role, content, data, isTyping, relevancy }: MessageBubbleProps) {
     const [copied, setCopied] = useState(false);
-    const [displayedContent, setDisplayedContent] = useState(role === "assistant" ? "" : content);
+    const [displayedContent, setDisplayedContent] = useState(
+        role === "assistant" && isTyping ? "" : content
+    );
     const timerRef = useRef<NodeJS.Timeout | null>(null);
 
     // Simulated Typewriter logic
