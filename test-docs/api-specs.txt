@@ -1,0 +1,114 @@
+=======================================
+  CortEx Internal API Specification v2.1
+  Confidential — For Team Use Only
+=======================================
+
+AUTHENTICATION
+--------------
+All API endpoints require a valid NextAuth session cookie.
+Unauthenticated requests return HTTP 401 with body: { "error": "Unauthorized" }
+
+Session tokens expire after 30 days.
+Refresh strategy: Automatic via NextAuth JWT rotation.
+
+RATE LIMITS
+-----------
+- Quick Mode: 30 requests/minute per user
+- Deep Mode: 10 requests/minute per user  
+- File Upload: 5 uploads/minute per user
+- Max file size for upload: 10MB
+- Max chunks per document: 500
+
+CHAT ENDPOINT: POST /api/chat
+------------------------------
+Request Body (JSON):
+{
+  "messages": [{ "role": "user"|"assistant", "content": "string" }],
+  "mode": "quick" | "deep" | "pr-analysis",
+  "sessionId": "uuid-string",
+  "ingestedRepo": "owner/repo" | null
+}
+
+Response: Server-Sent Events (SSE) stream
+Stream format: Vercel AI SDK Data Stream Protocol v1
+  - Content chunks: 0:"text chunk"\n
+  - Metadata: 2:[{"type":"relevancy","value":85}]\n
+  - Session events: 2:[{"type":"new_session_id","value":"uuid"}]\n
+
+Error codes:
+  - 401: Unauthorized
+  - 429: Rate limit exceeded
+  - 500: Internal server error (LLM timeout or Qdrant failure)
+
+UPLOAD ENDPOINT: POST /api/upload-doc
+--------------------------------------
+Request: multipart/form-data
+  - field "file": PDF, MD, or TXT file (max 10MB)
+
+Processing pipeline:
+  1. File type detection by extension
+  2. Text extraction (pdf-parse for PDF, UTF-8 decode for MD/TXT)
+  3. Chunking: RecursiveCharacterTextSplitter (1000 chars, 200 overlap)
+  4. Embedding: Xenova/all-MiniLM-L6-v2 (384 dimensions)
+  5. Storage: Qdrant "internal_docs" collection with userId filter
+
+Response (JSON):
+{
+  "message": "File ingested successfully",
+  "chunks": 42,
+  "filename": "architecture.pdf"
+}
+
+Error responses:
+  - 400: Unsupported file type or empty file
+  - 413: File too large (>500 chunks)
+  - 500: Processing error
+
+HISTORY ENDPOINT: GET /api/history
+-----------------------------------
+Returns last 50 research entries for the authenticated user.
+Response sorted by timestamp descending.
+
+Each entry contains:
+  - id: Qdrant point UUID
+  - query: Original user query
+  - response: AI response (truncated to 500 chars)
+  - mode: "quick" | "deep"
+  - cost: Estimated cost in USD
+  - relevancy: 0-100 score
+  - sessionId: Session grouping UUID
+  - timestamp: ISO 8601 datetime
+
+GITHUB INGEST: POST /api/github/ingest
+----------------------------------------
+Request Body:
+{
+  "repoUrl": "https://github.com/owner/repo",
+  "branch": "main"
+}
+
+Processing:
+  1. Fetches recursive file tree via GitHub API
+  2. Downloads code files (max 4KB each, skips binaries)
+  3. Embeds with Xenova/all-MiniLM-L6-v2
+  4. Stores in Qdrant "github_repos" collection
+
+Limitations:
+  - Max 200 files per repository
+  - Only processes: .ts, .tsx, .js, .jsx, .py, .md, .json, .yaml, .yml
+  - Requires valid GitHub OAuth token in session
+
+KNOWN ISSUES (Internal)
+------------------------
+1. Groq rate limits cause 429 errors during Deep Mode research loops
+   Workaround: Exponential backoff with 3 retries (implemented in agent.ts)
+
+2. pdf-parse loads test fixture at build time
+   Workaround: Dynamic import() instead of static import
+
+3. Qdrant scroll API sometimes returns stale data after rapid upserts
+   Workaround: Add 500ms delay before fetching after write operations
+
+4. Session management edge case: First message in new session 
+   incorrectly triggers new topic detection
+   Fix: Skip classifier when prevMessages.length === 0

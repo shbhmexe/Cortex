@@ -1,5 +1,6 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
+import GitHub from "next-auth/providers/github";
 import bcrypt from "bcryptjs";
 
 // Simple in-memory user store for hackathon
@@ -8,6 +9,11 @@ const users: { id: string; email: string; password: string; name: string }[] = [
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
     providers: [
+        GitHub({
+            clientId: process.env.GITHUB_ID,
+            clientSecret: process.env.GITHUB_SECRET,
+            authorization: { params: { scope: "read:user user:email repo" } },
+        }),
         Credentials({
             name: "credentials",
             credentials: {
@@ -64,15 +70,19 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
         signIn: "/auth/signin",
     },
     callbacks: {
-        async jwt({ token, user }) {
+        async jwt({ token, user, account }) {
             if (user) {
                 token.id = user.id;
+            }
+            if (account && account.provider === "github") {
+                token.accessToken = account.access_token;
             }
             return token;
         },
         async session({ session, token }) {
             if (session.user) {
                 session.user.id = token.id as string;
+                (session as any).accessToken = token.accessToken;
             }
             return session;
         },

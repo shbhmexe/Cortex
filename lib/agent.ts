@@ -1,5 +1,7 @@
 // @ts-nocheck
 import { tavilyTool } from "@/lib/tavily";
+import { searchGithubRepoTool } from "@/lib/tools/github-search";
+import { searchInternalDocs } from "@/lib/tools/internal-docs-search";
 import { ChatGroq } from "@langchain/groq";
 import { HumanMessage, SystemMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { StateGraph, END, Annotation, START } from "@langchain/langgraph";
@@ -35,14 +37,26 @@ const AgentState = Annotation.Root({
         reducer: (x, y) => y ?? x,
         default: () => 0,
     }),
+    ingestedRepo: Annotation<string | null>({
+        reducer: (x, y) => y ?? x,
+        default: () => null,
+    }),
+    userId: Annotation<string>({
+        reducer: (x, y) => y ?? x,
+        default: () => "",
+    }),
+    activeDocName: Annotation<string | null>({
+        reducer: (x, y) => y ?? x,
+        default: () => null,
+    }),
 });
 
 // Tools
-const researchTool = tavilyTool;
+const tools = [tavilyTool, searchGithubRepoTool];
 
-// Model — llama-3.1-8b-instant (Standard production model)
+// Model — llama-3.3-70b-versatile (Smart + Cost-effective)
 const model = new ChatGroq({
-    model: "llama-3.1-8b-instant",
+    model: "llama-3.3-70b-versatile",
     temperature: 0,
 });
 
@@ -99,7 +113,7 @@ async function planNode(state: typeof AgentState.State) {
 }
 
 async function researchNode(state: typeof AgentState.State, config?: RunnableConfig) {
-    const { plan, findings, loopCount } = state;
+    const { plan, findings, loopCount, query: originalQuery, ingestedRepo, userId, activeDocName } = state;
 
     const context = findings.join("\n\n");
     const prompt = `You are a Senior Research Engineer performing targeted technical research.
@@ -108,29 +122,49 @@ async function researchNode(state: typeof AgentState.State, config?: RunnableCon
     Existing Findings (${findings.length} sources gathered so far): ${context.slice(0, 2000)}
     Current Loop: ${loopCount + 1}
     
-    Based on the plan and what has already been found, generate the NEXT search query to gather missing technical information.
-    Focus on finding:
-    - Official documentation and API references
-    - Engineering blog posts with implementation details
-    - Code repositories and real-world examples
-    - Performance benchmarks and comparison data
-    - Architecture diagrams and system design patterns
-    
-    If previous findings lack code examples, prioritize finding code.
-    If previous findings lack authoritative sources, prioritize official docs.
-    
+    Based on the plan and what has already been found, generate the NEXT most important search query.
     Return ONLY the search query string, nothing else.`;
 
     const searchQueryMsg = await callWithRetry([new SystemMessage(prompt)]);
     const searchQuery = searchQueryMsg.content as string;
 
-    const searchResults = await researchTool.invoke(searchQuery);
+    let searchResults = "";
+    let internalDocsResults = "";
+
+    if (ingestedRepo) {
+        // User has an ingested repo → use Qdrant ONLY
+        const repoPattern = ingestedRepo.match(/([a-zA-Z0-9-]+)\/([a-zA-Z0-9-_\.]+)/);
+        const repoName = repoPattern ? repoPattern[0] : "";
+        console.log(`[Agent] Qdrant only. Repo: "${repoName}". Query: "${searchQuery}"`);
+        searchResults = await searchGithubRepoTool.invoke({
+            query: searchQuery || originalQuery,
+            repository: repoName,
+            limit: 4
+        });
+    } else if (userId && activeDocName) {
+        // User has an active document → use Internal Docs ONLY
+        console.log(`[Agent] Internal docs only. Doc: "${activeDocName}". Query: "${searchQuery}"`);
+        try {
+            internalDocsResults = await searchInternalDocs(userId, searchQuery || originalQuery, 3);
+        } catch (e) {
+            console.warn("[Agent] Internal docs search failed, continuing without it.");
+        }
+    } else {
+        // No ingested repo + no active doc → use Tavily ONLY
+        console.log(`[Agent] Tavily only. Query: "${searchQuery}"`);
+        searchResults = await tavilyTool.invoke(searchQuery);
+    }
+
+    const combinedResults = internalDocsResults
+        ? `${searchResults}\n\n--- Internal Documents ---\n${internalDocsResults}`
+        : searchResults;
 
     return {
-        findings: [`Search Query: "${searchQuery}"\nResults: ${searchResults}`],
+        findings: [`Search Query: "${searchQuery}"\nResults: ${combinedResults}`],
         loopCount: loopCount + 1
     };
 }
+
 
 async function critiqueNode(state: typeof AgentState.State) {
     const { query, findings, loopCount } = state;
@@ -177,6 +211,8 @@ Research Findings:
 ${findings.map(f => f.slice(0, 1000)).join("\n\n---\n\n")}
 
 Write your report using this EXACT structure. Start directly with the first header. Do NOT output any instructions, rules, or guidelines — only the report itself.
+MERMAID DIAGRAMS RULE: ONLY generate a Mermaid.js diagram (\`\`\`mermaid ... \`\`\`) if the user EXPLICITLY asks for a diagram, flowchart, sequence diagram, or architecture visualization. Do NOT add diagrams when the user asks you to BUILD, CREATE, or MAKE something (like a game, app, component, etc.). Building requests should be 90% code and 10% brief explanation.
+CRITICAL INSTRUCTION FOR WEB PROJECTS: If the user asks you to build or generate a web project, component, game, or app (HTML/CSS/JS or React), you MUST provide ALL the code consolidated into ONE SINGLE \`\`\`html\`\`\` OR \`\`\`react\`\`\` block. ABSOLUTELY DO NOT split HTML, CSS, and JS into separate blocks or steps. You must put the CSS inside <style> tags and the JavaScript inside <script> tags within the same HTML file. If it's React, put everything in one JSX/TSX file. This is mandatory so the user can preview the entire app at once.
 
 ## Executive Summary
     A 2-3 sentence overview of the key findings and recommendation.

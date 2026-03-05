@@ -7,6 +7,7 @@ const embeddings = {
 };
 
 export async function saveQuery(
+    userId: string,
     sessionId: string,
     query: string,
     response: string,
@@ -14,45 +15,57 @@ export async function saveQuery(
     mode: "quick" | "deep" = "quick",
     relevancy: number = 0
 ) {
-    await ensureCollection(COLLECTIONS.RESEARCH_HISTORY);
-
-    const textToEmbed = `${query}\n\n${response}`;
-    const vector = await embeddings.embedQuery(textToEmbed);
-
-    const pointId = uuidv4();
-
-    await qdrantClient.upsert(COLLECTIONS.RESEARCH_HISTORY, {
-        points: [
-            {
-                id: pointId,
-                vector,
-                payload: {
-                    sessionId,
-                    query,
-                    response,
-                    cost,
-                    mode,
-                    relevancy,
-                    timestamp: new Date().toISOString(),
-                },
-            },
-        ],
-    });
-}
-
-export async function getRecentQueries(sessionId?: string, limit: number = 20) {
-    await ensureCollection(COLLECTIONS.RESEARCH_HISTORY);
     try {
-        const filter = sessionId ? {
-            must: [
+        const textToEmbed = `${query}\n\n${response}`;
+        const vector = await embeddings.embedQuery(textToEmbed);
+
+        const pointId = uuidv4();
+
+        await qdrantClient.upsert(COLLECTIONS.RESEARCH_HISTORY, {
+            points: [
                 {
-                    key: "sessionId",
-                    match: {
-                        any: [sessionId],
+                    id: pointId,
+                    vector,
+                    payload: {
+                        userId,
+                        sessionId,
+                        query,
+                        response,
+                        cost,
+                        mode,
+                        relevancy,
+                        timestamp: new Date().toISOString(),
                     },
                 },
             ],
-        } : undefined;
+        });
+    } catch (e: any) {
+        console.error("Error saving query to Qdrant:", e.message);
+    }
+}
+
+export async function getRecentQueries(userId: string, sessionId?: string, limit: number = 20) {
+    await ensureCollection(COLLECTIONS.RESEARCH_HISTORY);
+    try {
+        const mustFilters: any[] = [
+            {
+                key: "userId",
+                match: {
+                    value: userId,
+                },
+            },
+        ];
+
+        if (sessionId) {
+            mustFilters.push({
+                key: "sessionId",
+                match: {
+                    value: sessionId,
+                },
+            });
+        }
+
+        const filter = { must: mustFilters };
 
         const result = await qdrantClient.scroll(COLLECTIONS.RESEARCH_HISTORY, {
             filter,
@@ -84,30 +97,34 @@ export async function deleteRecentQuery(id: string) {
 }
 
 export async function upsertUserPreference(
+    userId: string,
     sessionId: string,
     preference: string
 ) {
-    await ensureCollection(COLLECTIONS.USER_PREFERENCES);
+    try {
+        const vector = await embeddings.embedQuery(preference);
+        const pointId = uuidv4();
 
-    const vector = await embeddings.embedQuery(preference);
-    const pointId = uuidv4();
-
-    await qdrantClient.upsert(COLLECTIONS.USER_PREFERENCES, {
-        points: [
-            {
-                id: pointId,
-                vector,
-                payload: {
-                    sessionId,
-                    preference,
-                    timestamp: new Date().toISOString(),
+        await qdrantClient.upsert(COLLECTIONS.USER_PREFERENCES, {
+            points: [
+                {
+                    id: pointId,
+                    vector,
+                    payload: {
+                        userId,
+                        sessionId,
+                        preference,
+                        timestamp: new Date().toISOString(),
+                    },
                 },
-            },
-        ],
-    });
+            ],
+        });
+    } catch (e: any) {
+        console.error("Error saving preference to Qdrant:", e.message);
+    }
 }
 
-export async function getUserPreferences(sessionId: string) {
+export async function getUserPreferences(userId: string, sessionId: string) {
     await ensureCollection(COLLECTIONS.USER_PREFERENCES);
 
     // Simplistic retrieval: get all preferences for session
@@ -115,6 +132,12 @@ export async function getUserPreferences(sessionId: string) {
         const result = await qdrantClient.scroll(COLLECTIONS.USER_PREFERENCES, {
             filter: {
                 must: [
+                    {
+                        key: "userId",
+                        match: {
+                            value: userId,
+                        },
+                    },
                     {
                         key: "sessionId",
                         match: {

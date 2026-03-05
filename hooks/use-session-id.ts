@@ -13,6 +13,11 @@ export function useSessionId() {
     return newId;
   };
 
+  const setSessionTo = (id: string) => {
+    localStorage.setItem("deep-research-session-id", id);
+    setSessionId(id);
+  };
+
   useEffect(() => {
     if (typeof window !== "undefined") {
       let storedId = localStorage.getItem("deep-research-session-id");
@@ -24,5 +29,5 @@ export function useSessionId() {
     }
   }, []);
 
-  return { sessionId, newSession: generateNewSession };
+  return { sessionId, newSession: generateNewSession, setSessionTo };
 }
