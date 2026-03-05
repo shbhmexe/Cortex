@@ -11,7 +11,8 @@ import { auth } from "@/lib/auth";
 import { randomUUID } from "crypto";
 import { searchInternalDocs } from "@/lib/tools/internal-docs-search";
 
-export const maxDuration = 180; // Deep Mode needs up to 3 minutes
+export const maxDuration = 60; // Vercel hobby plan max is 60s
+export const dynamic = 'force-dynamic';
 
 // Detect if user is stating a preference
 function detectPreference(message: string): string | null {

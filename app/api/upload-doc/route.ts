@@ -5,7 +5,8 @@ import { pipeline } from "@huggingface/transformers";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import crypto from "crypto";
 
-export const maxDuration = 180; // Allows up to 3 minutes for processing large PDFs
+export const maxDuration = 60; // Allows up to 60 minutes for processing large PDFs
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
     try {
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
         if (!file) {
             return NextResponse.json({ error: "No file provided" }, { status: 400 });
         }
-        
+
 
         const filename = file.name;
         const arrayBuffer = await file.arrayBuffer();
