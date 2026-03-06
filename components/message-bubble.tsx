@@ -22,6 +22,7 @@ interface MessageBubbleProps {
     data?: any[]; // For stream data events
     isTyping?: boolean;
     relevancy?: number;
+    imagePreview?: string;
 }
 
 function Citation({ url, index }: { url: string; index: number }) {
@@ -284,7 +285,7 @@ function CodeBlockWrapper({ className, children, isTyping }: { className?: strin
     return <CodeBlock className={className} children={code} />;
 }
 
-export function MessageBubble({ role, content, data, isTyping, relevancy }: MessageBubbleProps) {
+export function MessageBubble({ role, content, data, isTyping, relevancy, imagePreview }: MessageBubbleProps) {
     const [copied, setCopied] = useState(false);
     const [displayedContent, setDisplayedContent] = useState(
         role === "assistant" && isTyping ? "" : content
@@ -433,7 +434,14 @@ export function MessageBubble({ role, content, data, isTyping, relevancy }: Mess
                     {processedContent.trim() && (
                         <div className={`${role === "assistant" ? "prose dark:prose-invert" : "whitespace-pre-wrap"} max-w-none break-words`}>
                             {role === "user" ? (
-                                processedContent
+                                <div className="flex flex-col gap-3">
+                                    {imagePreview && (
+                                        <div className="bg-black/10 rounded-xl overflow-hidden self-end border border-white/10 shadow-sm w-fit max-w-full">
+                                            <img src={imagePreview} alt="Attached" className="max-w-full sm:max-w-[400px] max-h-[300px] object-contain block" />
+                                        </div>
+                                    )}
+                                    <span className="break-words leading-relaxed">{processedContent}</span>
+                                </div>
                             ) : (
                                 <ReactMarkdown
                                     remarkPlugins={[remarkGfm]}

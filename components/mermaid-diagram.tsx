@@ -30,8 +30,12 @@ export function MermaidDiagram({ chart }: MermaidDiagramProps) {
 
         const renderChart = async () => {
             try {
-                const cleanChart = chart.replace(/^```mermaid\s*\n/, '').replace(/\n```$/, '').trim();
+                let cleanChart = chart.replace(/^```mermaid\s*\n/, '').replace(/\n```$/, '').trim();
                 if (!cleanChart) return;
+
+                // Fix common LLM hallucinated syntax for text arrows, e.g. -->|Request|> Node
+                cleanChart = cleanChart.replace(/-->\|([^|]+)\|>/g, '-->|$1|');
+                cleanChart = cleanChart.replace(/--\|([^|]+)\|>/g, '-->|$1|');
 
                 // Clear state
                 if (isMounted) setError(null);

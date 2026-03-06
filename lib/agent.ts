@@ -3,6 +3,7 @@ import { tavilyTool } from "@/lib/tavily";
 import { searchGithubRepoTool } from "@/lib/tools/github-search";
 import { searchInternalDocs } from "@/lib/tools/internal-docs-search";
 import { ChatGroq } from "@langchain/groq";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { HumanMessage, SystemMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { StateGraph, END, Annotation, START } from "@langchain/langgraph";
 import { RunnableConfig } from "@langchain/core/runnables";
@@ -49,26 +50,56 @@ const AgentState = Annotation.Root({
         reducer: (x, y) => y ?? x,
         default: () => null,
     }),
+    modelName: Annotation<string>({
+        reducer: (x, y) => y ?? x,
+        default: () => "llama-3.3-70b-versatile",
+    }),
 });
 
 // Tools
 const tools = [tavilyTool, searchGithubRepoTool];
 
-// Model — llama-3.3-70b-versatile (Smart + Cost-effective)
-const model = new ChatGroq({
-    model: "llama-3.3-70b-versatile",
-    temperature: 0,
-});
+// Retry wrapper for rate limits, dynamically instantiates model with fallbacks
+async function callWithRetry(messages: any[], modelName: string, maxRetries = 3): Promise<any> {
+    let primaryModel;
+    let fallbackModel;
 
-// Retry wrapper for Groq rate limits
-async function callWithRetry(messages: any[], maxRetries = 3): Promise<any> {
+    if (modelName.startsWith("gemini")) {
+        primaryModel = new ChatGoogleGenerativeAI({
+            model: modelName,
+            temperature: 0,
+            maxOutputTokens: 8192,
+            apiKey: process.env.GOOGLE_API_KEY || "AIzaSy_fake_key_to_prevent_crash",
+        });
+        fallbackModel = new ChatGroq({
+            model: "llama-3.3-70b-versatile",
+            temperature: 0,
+        });
+    } else {
+        primaryModel = new ChatGroq({
+            model: modelName,
+            temperature: 0,
+        });
+        fallbackModel = new ChatGoogleGenerativeAI({
+            model: "gemini-2.0-flash",
+            temperature: 0,
+            maxOutputTokens: 8192,
+            apiKey: process.env.GOOGLE_API_KEY || "AIzaSy_fake_key_to_prevent_crash",
+        });
+    }
+
+    const model = primaryModel.withFallbacks({
+        fallbacks: [fallbackModel],
+    });
+
     for (let attempt = 0; attempt < maxRetries; attempt++) {
         try {
             return await model.invoke(messages);
         } catch (error: any) {
             const isRateLimit = error?.message?.includes('rate_limit') ||
                 error?.message?.includes('429') ||
-                error?.status === 429;
+                error?.status === 429 ||
+                error?.message?.includes('429 Too Many Requests');
             if (isRateLimit && attempt < maxRetries - 1) {
                 const delay = (attempt + 1) * 5000; // 5s, 10s, 15s
                 console.log(`Rate limited. Retrying in ${delay / 1000}s (attempt ${attempt + 1}/${maxRetries})`);
@@ -100,7 +131,8 @@ async function planNode(state: typeof AgentState.State) {
   Generate 4-6 targeted search queries. Example format:
   ["Next.js App Router architecture patterns", "React Server Components vs Client Components performance benchmarks", ...]`;
 
-    const response = await callWithRetry([new SystemMessage(prompt), new HumanMessage(query)]);
+    const { modelName } = state;
+    const response = await callWithRetry([new SystemMessage(prompt), new HumanMessage(query)], modelName);
     let plan: string[] = [];
     try {
         const cleanContent = (response.content as string).replace(/```json|```/g, "").trim();
@@ -125,7 +157,8 @@ async function researchNode(state: typeof AgentState.State, config?: RunnableCon
     Based on the plan and what has already been found, generate the NEXT most important search query.
     Return ONLY the search query string, nothing else.`;
 
-    const searchQueryMsg = await callWithRetry([new SystemMessage(prompt)]);
+    const { modelName } = state;
+    const searchQueryMsg = await callWithRetry([new SystemMessage(prompt)], modelName);
     const searchQuery = searchQueryMsg.content as string;
 
     let searchResults = "";
@@ -191,7 +224,8 @@ async function critiqueNode(state: typeof AgentState.State) {
     If findings are technically deep, well-sourced, and cover multiple angles:
       Return "sufficient"`;
 
-    const response = await callWithRetry([new SystemMessage(prompt)]);
+    const { modelName } = state;
+    const response = await callWithRetry([new SystemMessage(prompt)], modelName);
     const content = (response.content as string).toLowerCase();
 
     const decision = (content.includes("sufficient") && findings.length >= 3) ? null : "needs_research";
@@ -211,7 +245,8 @@ Research Findings:
 ${findings.map(f => f.slice(0, 1000)).join("\n\n---\n\n")}
 
 Write your report using this EXACT structure. Start directly with the first header. Do NOT output any instructions, rules, or guidelines — only the report itself.
-MERMAID DIAGRAMS RULE: ONLY generate a Mermaid.js diagram (\`\`\`mermaid ... \`\`\`) if the user EXPLICITLY asks for a diagram, flowchart, sequence diagram, or architecture visualization. Do NOT add diagrams when the user asks you to BUILD, CREATE, or MAKE something (like a game, app, component, etc.). Building requests should be 90% code and 10% brief explanation.
+MERMAID DIAGRAMS RULE: ONLY generate a Mermaid.js diagram (\`\`\`mermaid ... \`\`\`) if the user EXPLICITLY asks for a diagram, flowchart, sequence diagram, or architecture visualization. Do NOT add diagrams when the user asks you to BUILD, CREATE, or MAKE something.
+CRITICAL MERMAID SYNTAX RULE: Never use \`-->|text|>\` or \`--|text|>\`. The correct syntax for a text link is \`A -->|text| B\`. Nodes must be defined before linking if using special characters.
 CRITICAL INSTRUCTION FOR WEB PROJECTS: If the user asks you to build or generate a web project, component, game, or app (HTML/CSS/JS or React), you MUST provide ALL the code consolidated into ONE SINGLE \`\`\`html\`\`\` OR \`\`\`react\`\`\` block. ABSOLUTELY DO NOT split HTML, CSS, and JS into separate blocks or steps. You must put the CSS inside <style> tags and the JavaScript inside <script> tags within the same HTML file. If it's React, put everything in one JSX/TSX file. This is mandatory so the user can preview the entire app at once.
 
 ## Executive Summary
@@ -234,7 +269,8 @@ State your recommendation with justification. Cite supporting evidence.
 
 Remember: cite sources as [[https://example.com/path]] inline in sentences. Use multiple different URLs from the findings. Do NOT add a Sources/References section at the end. Start your response with "## Executive Summary".`;
 
-    const finalContent = await callWithRetry([new SystemMessage(prompt)]);
+    const { modelName } = state;
+    const finalContent = await callWithRetry([new SystemMessage(prompt)], modelName);
 
     // Evaluate relevancy score
     const relevancyPrompt = `You are a strict Technical Relevancy Evaluator.
@@ -251,7 +287,7 @@ Remember: cite sources as [[https://example.com/path]] inline in sentences. Use 
     
     Return ONLY a single integer between 0 and 100 representing the relevancy percentage. Nothing else.`;
 
-    const relevancyResponse = await callWithRetry([new SystemMessage(relevancyPrompt)]);
+    const relevancyResponse = await callWithRetry([new SystemMessage(relevancyPrompt)], modelName);
     let relevancy = 85;
     try {
         const cleaned = (relevancyResponse.content as string).replace(/[^0-9]/g, '').trim();

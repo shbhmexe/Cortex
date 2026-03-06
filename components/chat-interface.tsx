@@ -8,10 +8,11 @@ import { UserButton } from "@/components/user-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ArrowUp, Download, Loader2, Plus, Users, FolderGit2, X, FileText } from "lucide-react";
+import { ArrowUp, Download, Loader2, Plus, Users, FolderGit2, X, FileText, Paperclip } from "lucide-react";
 import { exportChatToPDF } from "@/lib/export-pdf";
 import { toast } from "sonner";
 import { CollabWorkspace } from "./collab-workspace";
+import { ModelSelector } from "@/components/model-selector";
 
 interface ChatInterfaceProps {
     loadedHistory?: { query: string; response: string; mode: string } | null;
@@ -29,6 +30,13 @@ export default function ChatInterface({ loadedHistory, onHistoryLoaded, onNewCha
     const { sessionId, newSession, setSessionTo } = useSessionId();
     const [mode, setMode] = useState<"quick" | "deep">("quick");
     const scrollRef = useRef<HTMLDivElement>(null);
+    const [selectedModel, setSelectedModel] = useState("llama-3.3-70b-versatile");
+    // Ref to always get fresh model value in submit handler (avoids stale closure)
+    const selectedModelRef = useRef("llama-3.3-70b-versatile");
+    const handleModelChange = (m: string) => {
+        setSelectedModel(m);
+        selectedModelRef.current = m;
+    };
 
     // Collaborative Workspace State
     const [collabSession, setCollabSession] = useState<{ roomId: string, initialCode: string, language: string } | null>(null);
@@ -36,20 +44,52 @@ export default function ChatInterface({ loadedHistory, onHistoryLoaded, onNewCha
     const [joinRoomId, setJoinRoomId] = useState("");
 
     const inputRef = useRef<HTMLInputElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    // Map from message index (as string) to image data URL for chat bubble display
+    const messageImages = useRef<Map<string, string>>(new Map());
     const lastProcessedDataLen = useRef(0);
+    const [attachedImage, setAttachedImage] = useState<{ base64: string; mimeType: string; preview: string } | null>(null);
 
-    const { messages, input, handleInputChange, handleSubmit, isLoading, data, setMessages, setInput, stop } = useChat({
-        body: {
-            mode,
-            sessionId,
-            ingestedRepo: ingestedRepo ?? null,
-            activeDocName: activeDoc ?? null, // Pass active doc to backend for conditional RAG
-        },
+    const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const dataUrl = ev.target?.result as string;
+            const [meta, base64] = dataUrl.split(",");
+            const mimeType = meta.split(":")[1].split(";")[0];
+            setAttachedImage({ base64, mimeType, preview: dataUrl });
+        };
+        reader.readAsDataURL(file);
+        // Reset the input so same file can be re-selected
+        e.target.value = "";
+    };
+
+    const { messages, input, handleInputChange, handleSubmit: chatSubmit, isLoading, data, setMessages, setInput, stop } = useChat({
         onFinish: () => {
-            // Slight delay so the API has time to persist the record before sidebar refetches
             setTimeout(() => onChatComplete?.(), 500);
         },
     });
+
+    // Custom submit handler — always picks fresh model from ref
+    const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+        // If image is attached, save preview keyed by the upcoming message index
+        if (attachedImage) {
+            messageImages.current.set(String(messages.length), attachedImage.preview);
+        }
+        chatSubmit(e, {
+            body: {
+                model: selectedModelRef.current,
+                mode,
+                sessionId,
+                ingestedRepo: ingestedRepo ?? null,
+                activeDocName: activeDoc ?? null,
+                imageBase64: attachedImage?.base64 ?? null,
+                imageMimeType: attachedImage?.mimeType ?? null,
+            },
+        });
+        setAttachedImage(null);
+    };
 
     // Auto-session management: watch for NEW topic_detection events only
     useEffect(() => {
@@ -314,6 +354,7 @@ export default function ChatInterface({ loadedHistory, onHistoryLoaded, onNewCha
                     // Pass data to the last assistant message (always, not just while loading)
                     const isLastAssistant = m.role === 'assistant' &&
                         i === messages.map((msg, idx) => msg.role === 'assistant' ? idx : -1).filter(x => x >= 0).pop();
+                    const imagePreview = m.role === 'user' ? messageImages.current.get(String(i)) : undefined;
                     return (
                         <MessageBubble
                             key={m.id}
@@ -322,6 +363,7 @@ export default function ChatInterface({ loadedHistory, onHistoryLoaded, onNewCha
                             data={isLastAssistant ? data : undefined}
                             isTyping={isLastAssistant && isLoading}
                             relevancy={(m as any).relevancy}
+                            imagePreview={imagePreview}
                         />
                     );
                 })}
@@ -424,40 +466,82 @@ export default function ChatInterface({ loadedHistory, onHistoryLoaded, onNewCha
                         )}
                     </div>
 
-                    <form onSubmit={handleSubmit} className="relative flex items-center w-full group">
+                    <form onSubmit={handleSubmit} className="relative flex flex-col items-stretch w-full group gap-0">
                         <div className="absolute inset-0 bg-primary/5 blur-2xl rounded-full opacity-0 group-focus-within:opacity-100 transition-opacity" />
-                        <Input
-                            ref={inputRef}
-                            value={input}
-                            onChange={handleInputChange}
-                            placeholder={mode === "quick" ? "Ask anything technical..." : "Describe a complex research objective..."}
-                            className="pr-16 py-8 text-base md:text-lg rounded-[2rem] shadow-2xl border-white/10 focus-visible:ring-primary/30 focus-visible:border-primary/50 bg-card/40 backdrop-blur-xl transition-all duration-300 group-hover:border-primary/30 relative z-10"
-                            disabled={isLoading}
-                        />
-
-                        {isLoading ? (
-                            <Button
-                                type="button"
-                                size="icon"
-                                onClick={(e) => {
-                                    e.preventDefault();
-                                    stop();
-                                }}
-                                className="absolute right-3 top-3 bottom-3 aspect-square h-auto w-12 rounded-[1.4rem] bg-zinc-800 hover:bg-red-500/20 text-zinc-400 hover:text-red-500 hover:scale-105 transition-all active:scale-95 shadow-lg z-20 flex items-center justify-center border border-zinc-700 hover:border-red-500/30"
-                                title="Stop generating"
-                            >
-                                <div className="w-3.5 h-3.5 bg-current rounded-[2px]" />
-                            </Button>
-                        ) : (
-                            <Button
-                                type="submit"
-                                size="icon"
-                                disabled={!input.trim()}
-                                className="absolute right-3 top-3 bottom-3 aspect-square h-auto w-12 rounded-[1.4rem] bg-primary text-primary-foreground hover:scale-105 transition-all active:scale-95 shadow-lg shadow-primary/20 z-20"
-                            >
-                                <ArrowUp className="w-6 h-6 stroke-[3px]" />
-                            </Button>
+                        {/* Image preview strip */}
+                        {attachedImage && (
+                            <div className="flex items-center gap-2 px-4 pt-3 pb-1 relative z-20">
+                                <div className="relative group/img">
+                                    <img src={attachedImage.preview} alt="attached" className="h-14 w-14 object-cover rounded-xl border border-white/10 shadow-md" />
+                                    <button type="button" onClick={() => setAttachedImage(null)}
+                                        className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-zinc-800 border border-zinc-600 flex items-center justify-center hover:bg-red-500 transition-colors">
+                                        <X className="w-2.5 h-2.5" />
+                                    </button>
+                                </div>
+                                <span className="text-xs text-muted-foreground">Image attached — will be analyzed by vision model</span>
+                            </div>
                         )}
+                        <div className="relative flex items-center w-full">
+                            {/* Model Selector inside input — left side */}
+                            <div className="absolute left-4 top-1/2 -translate-y-1/2 z-20 flex items-center">
+                                <ModelSelector selectedModel={selectedModel} onModelChange={handleModelChange} />
+                                <div className="w-px h-4 bg-white/10 ml-1 mr-0.5" />
+                            </div>
+                            <Input
+                                ref={inputRef}
+                                value={input}
+                                onChange={handleInputChange}
+                                placeholder={mode === "quick" ? "Ask anything technical..." : "Describe a complex research objective..."}
+                                className="pl-[9.5rem] pr-16 py-8 text-base md:text-lg rounded-[2rem] shadow-2xl border-white/10 focus-visible:ring-primary/30 focus-visible:border-primary/50 bg-card/40 backdrop-blur-xl transition-all duration-300 group-hover:border-primary/30 relative z-10"
+                                disabled={isLoading}
+                            />
+
+                            {/* Hidden file input for image upload */}
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={handleImageSelect}
+                            />
+                            {/* Image attach button */}
+                            {!isLoading && (
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className={`absolute right-[3.75rem] top-1/2 -translate-y-1/2 z-20 w-9 h-9 rounded-xl flex items-center justify-center transition-all ${attachedImage
+                                        ? "bg-primary/20 text-primary"
+                                        : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                                        }`}
+                                    title="Attach image"
+                                >
+                                    <Paperclip className="w-4 h-4" />
+                                </button>
+                            )}
+                            {isLoading ? (
+                                <Button
+                                    type="button"
+                                    size="icon"
+                                    onClick={(e) => {
+                                        e.preventDefault();
+                                        stop();
+                                    }}
+                                    className="absolute right-3 top-3 bottom-3 aspect-square h-auto w-12 rounded-[1.4rem] bg-zinc-800 hover:bg-red-500/20 text-zinc-400 hover:text-red-500 hover:scale-105 transition-all active:scale-95 shadow-lg z-20 flex items-center justify-center border border-zinc-700 hover:border-red-500/30"
+                                    title="Stop generating"
+                                >
+                                    <div className="w-3.5 h-3.5 bg-current rounded-[2px]" />
+                                </Button>
+                            ) : (
+                                <Button
+                                    type="submit"
+                                    size="icon"
+                                    disabled={!input.trim() && !attachedImage}
+                                    className="absolute right-3 top-3 bottom-3 aspect-square h-auto w-12 rounded-[1.4rem] bg-primary text-primary-foreground hover:scale-105 transition-all active:scale-95 shadow-lg shadow-primary/20 z-20"
+                                >
+                                    <ArrowUp className="w-6 h-6 stroke-[3px]" />
+                                </Button>
+                            )}
+                        </div>
                     </form>
                 </div>
                 <div className="text-center py-3 bg-background border-t-0">

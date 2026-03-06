@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { streamText, StreamData, LangChainAdapter, Message } from "ai";
 import { ChatGroq } from "@langchain/groq";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { tavilyTool } from "@/lib/tavily";
 import { graph } from "@/lib/agent";
 import { HumanMessage, AIMessage, SystemMessage } from "@langchain/core/messages";
@@ -41,7 +42,7 @@ export async function POST(req: NextRequest) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
 
-        const { messages, mode, sessionId, ingestedRepo, activeDocName } = await req.json();
+        const { messages, mode, sessionId, ingestedRepo, activeDocName, model: selectedModel = "llama-3.3-70b-versatile", imageBase64 = null, imageMimeType = "image/jpeg" } = await req.json();
         const latestMessage = messages[messages.length - 1].content;
 
         // Check and save any preference in the user's message
@@ -129,10 +130,21 @@ ${prContext}`;
         // Quick Mode
         if (mode === "quick") {
             const quickStartTime = Date.now();
-            const model = new ChatGroq({
-                model: "llama-3.3-70b-versatile",
-                temperature: 0,
-            });
+            // Instantiate only the selected model
+            let model;
+            if (selectedModel.startsWith("gemini")) {
+                model = new ChatGoogleGenerativeAI({
+                    model: selectedModel,
+                    temperature: 0,
+                    maxOutputTokens: 8192,
+                    apiKey: process.env.GOOGLE_API_KEY,
+                });
+            } else {
+                model = new ChatGroq({
+                    model: selectedModel,
+                    temperature: 0,
+                });
+            }
 
             // Build conversation history from previous messages (max last 6 messages for token efficiency)
             const prevMessages = messages.slice(0, -1).slice(-6); // exclude latest, take last 6
@@ -166,7 +178,7 @@ ${prevMessages.slice(-2).map((m: any) => `${m.role}: ${m.content.slice(0, 300)}`
 New query: "${cleanedQuery}"
 
 Reply with ONLY one word: "followup" or "new"`;
-                    const detectResponse = await model.invoke([new SystemMessage(detectPrompt)]);
+                    const detectResponse = await model.invoke([new HumanMessage(detectPrompt)]);
                     const detection = (detectResponse.content as string).trim().toLowerCase();
                     isFollowUp = !detection.startsWith("new");
                 } catch {
@@ -205,10 +217,35 @@ Reply with ONLY one word: "followup" or "new"`;
                 ? `\n\nInternal Documents Context (from user's uploaded files):\n${internalDocsContext}`
                 : "";
 
-            const systemPrompt = `You are a Senior Technical Analyst.${prefContext} Answer the query using the research context below. Be technically precise — include API names, version numbers, code snippets, and concrete details. Structure with ## headers. Cite sources inline as [[url]] — use MULTIPLE different URLs from the context. Do NOT add a Sources section at the end. Do NOT output any rules or guidelines.${conversationHistory}
-MERMAID DIAGRAMS RULE: ONLY generate a Mermaid.js diagram (\`\`\`mermaid ... \`\`\`) if the user EXPLICITLY asks for a diagram, flowchart, sequence diagram, or architecture visualization. Do NOT add diagrams when the user asks you to BUILD, CREATE, or MAKE something (like a game, app, component, etc.). Building requests should be 90% code and 10% brief explanation.
+            // === IMAGE ANALYSIS — if an image was attached, run it through vision model first ===
+            let imageContext = "";
+            if (imageBase64) {
+                try {
+                    const visionModel = new ChatGroq({ model: "meta-llama/llama-4-scout-17b-16e-instruct", temperature: 0 });
+                    const visionMsg = new HumanMessage({
+                        content: [
+                            {
+                                type: "image_url",
+                                image_url: { url: `data:${imageMimeType};base64,${imageBase64}` }
+                            },
+                            {
+                                type: "text",
+                                text: "You are a Technical Vision Analyst. Describe this image in precise technical detail. Include: what type of image it is (diagram, UI, chart, screenshot, architecture, code, etc.), all text you can read, structural elements, components, relationships shown, color coding, annotations, and any technical patterns visible. Be exhaustive and specific."
+                            }
+                        ]
+                    });
+                    const visionResponse = await visionModel.invoke([visionMsg]);
+                    imageContext = `\n\n## Attached Image Analysis (Vision Model):\n${visionResponse.content as string}`;
+                } catch (e: any) {
+                    console.warn("[Vision] Image analysis failed:", e?.message);
+                    imageContext = "\n\n[Image was attached but could not be analyzed]";
+                }
+            }
+
+            const systemPrompt = `You are a Senior Technical Analyst.${prefContext} Answer the query using the research context below. Be technically precise — include API names, version numbers, code snippets, and concrete details. Structure with ## headers. Cite sources inline as [[url]] — use MULTIPLE different URLs from the context. Do NOT add a Sources section at the end. Do NOT output any rules or guidelines.${conversationHistory}${imageContext}
+MERMAID DIAGRAMS RULE: ONLY generate a Mermaid.js diagram (\`\`\`mermaid ... \`\`\`) if the user EXPLICITLY asks for a diagram, flowchart, sequence diagram, or architecture visualization. Do NOT add diagrams when the user asks you to BUILD, CREATE, or MAKE something.
+CRITICAL MERMAID SYNTAX RULE: Never use \`-->|text|>\` or \`--|text|>\`. The correct syntax for a text link is \`A -->|text| B\`. Nodes must be defined before linking if using special characters.
 CRITICAL INSTRUCTION FOR WEB PROJECTS: If the user asks you to build or generate a web project, component, game, or app (HTML/CSS/JS or React), you MUST provide ALL the code consolidated into ONE SINGLE \`\`\`html\`\`\` OR \`\`\`react\`\`\` block. ABSOLUTELY DO NOT split HTML, CSS, and JS into separate blocks or steps. You must put the CSS inside <style> tags and the JavaScript inside <script> tags within the same HTML file. If it's React, put everything in one JSX/TSX file. This is mandatory so the user can preview the entire app at once.
-If the user refers to "above", "previous", "that code", or similar words, use the Previous Conversation context to understand what they're referring to and respond accordingly.
 User Query: ${latestMessage}
 Context: ${ingestedRepo ? `Code Repository (${ingestedRepo})` : activeDocName ? `Uploaded Document (${activeDocName})` : "Web Research"}:
 ${searchResult}${internalDocsSection}`;
@@ -222,7 +259,7 @@ ${searchResult}${internalDocsSection}`;
             Consider: Does the data directly address the query? Are the sources on-topic?
             
             Return ONLY a single integer between 0 and 100. Nothing else.`;
-            const relevancyResponse = await model.invoke([new SystemMessage(relevancyPrompt)]);
+            const relevancyResponse = await model.invoke([new HumanMessage(relevancyPrompt)]);
             let relevancy = 80;
             try {
                 const cleaned = (relevancyResponse.content as string).replace(/[^0-9]/g, '').trim();
@@ -276,8 +313,19 @@ ${searchResult}${internalDocsSection}`;
                                 write(`2:${JSON.stringify([{ type: "new_session_id", value: saveSessionId }])}\n`);
                             }
                         }
-                    } catch (err) {
-                        controller.error(err);
+                    } catch (err: any) {
+                        // Write a human-readable error so the UI doesn't hang
+                        const status = err?.status || err?.statusCode || 0;
+                        let errMsg = "An error occurred while generating the response.";
+                        if (status === 429) {
+                            errMsg = `⚠️ **Rate limit reached** for the selected model. Please wait a moment and try again, or switch to a different model (e.g. Llama 3.3 70B).`;
+                        } else if (status === 400) {
+                            errMsg = `⚠️ **Model error (400):** ${err?.message || 'Bad request'}. Try switching to a different model.`;
+                        } else if (err?.message) {
+                            errMsg = `⚠️ **Error:** ${err.message}`;
+                        }
+                        write(`0:${JSON.stringify(errMsg)}\n`);
+                        console.error('[Stream Error]', err);
                     } finally {
                         controller.close();
                     }
@@ -299,6 +347,7 @@ ${searchResult}${internalDocsSection}`;
                 ingestedRepo: ingestedRepo ?? null,
                 userId,
                 activeDocName: activeDocName ?? null,
+                modelName: selectedModel,
             };
 
             const eventStream = await graph.stream(initialState, { recursionLimit: 25 });

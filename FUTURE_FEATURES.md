@@ -46,6 +46,11 @@ This document outlines the planned features and technical enhancements to take *
 - **Implementation:** Built a sliding `PreviewSidebar` containing a secure `WebSandbox` iframe. It leverages `babel-standalone` and CDN React to compile JSX instantly in the browser. 
 - **Value:** Turns CortEx into a mini-IDE where users can instantly visualize and play with the frontend code the AI writes, complete with a dark mode preview.
 - **Delivered:** `components/web-sandbox.tsx`, `components/preview-sidebar.tsx`, injected into `app/layout.tsx`.
+
+### 5. 📚 Internal Knowledge RAG (File Uploads) ✅ [COMPLETED]
+- **Concept:** Research across internet data AND internal company documentation.
+- **Implementation:** Support for PDF, Markdown, and TXT uploads into the **Qdrant** vector store.
+- **Value:** Agent can answer questions based on internal API specs, architectural decision records (ADRs), and legacy docs.
 ---
 
 
@@ -55,15 +60,16 @@ This document outlines the planned features and technical enhancements to take *
 - **Value:** Absolute data privacy for corporate environments.
 
 
-### 5. 📚 Internal Knowledge RAG (File Uploads)
-- **Concept:** Research across internet data AND internal company documentation.
-- **Implementation:** Support for PDF, Markdown, and TXT uploads into the **Qdrant** vector store.
-- **Value:** Agent can answer questions based on internal API specs, architectural decision records (ADRs), and legacy docs.
 
-### 6. 🫂 Multi-Agent Expert Panel
-- **Concept:** Use specialized agents to critique and improve research.
-- **Implementation:** **LangGraph** workflow with personas: *System Architect*, *Security Auditor*, and *Performance Lead*.
-- **Value:** Higher quality reporting with built-in "defense" against hallucinations and security gaps.
+### 6. � Multi-Model Support (Llama, Gemini, Mixtral) ✅ [COMPLETED]
+- **Concept:** Allow users to choose their preferred LLM for research and chat.
+- **Implementation:** Integrated a ModelSelector dropdown in the chat input area. The backend (`route.ts` and `agent.ts`) dynamically instantiates either `@langchain/groq` (for Llama/Mixtral) or `@langchain/google-genai` (for Gemini) based on the state. Includes a modal with instructions to get free API keys.
+- **Value:** Flexibility, cost control, and preventing vendor lock-in by supporting multiple free top-tier models.
+
+### 11. 🎨 Multi-Modal Architecture Analysis ✅ [COMPLETED]
+- **Concept:** Upload diagrams and get technical analysis.
+- **Implementation:** Use Vision models (like Llama 3.2 Vision) to interpret architecture diagrams or UI mockups.
+- **Value:** Bridges the gap between visual design and technical implementation.
 
 ### 7. 🔌 IDE & Note-taking Extensions
 - **Concept:** Bring CortEx into the developer's existing workflow.
@@ -91,10 +97,6 @@ This document outlines the planned features and technical enhancements to take *
 - **Implementation:** Live feed showing URLs being visited, technical snippets extracted, and relevancy scores as they happen.
 - **Value:** Increases transparency and user trust in the agent's findings.
 
-### 11. 🎨 Multi-Modal Architecture Analysis
-- **Concept:** Upload diagrams and get technical analysis.
-- **Implementation:** Use Vision models (like Llama 3.2 Vision) to interpret architecture diagrams or UI mockups.
-- **Value:** Bridges the gap between visual design and technical implementation.
 
 ### 12. ⏱️ Performance & Cost Analytics Dashboard
 - **Concept:** Track where the "thinking time" and "token budget" are going.
